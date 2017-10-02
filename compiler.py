@@ -13,6 +13,7 @@ Expr = BinOp(Bop op, Expr left, Expr right)
      | Ref(Str name, Expr? index)
      | FloatConst(float val)
      | IntConst(int val)
+     | Call(Str name, Expr* args)
 
 Uop = Neg | Not
 Bop = Add | Sub | Mul | Div | Mod | And | Or
@@ -69,6 +70,9 @@ class Return(ast.AST):
 
 class FuncDef(ast.AST):
     _fields = ['name', 'args', 'body']
+
+class Call(ast.AST):
+    _fields = ['func', 'args']
 
 class PythonToSimple(ast.NodeVisitor):
     """
@@ -181,7 +185,11 @@ Stmt = Assign(Ref ref, Expr val)
     def visit_FunctionDef(self, func):
         assert isinstance(func.body, list)
         body = self.visit_block(func.body)
-        return FuncDef(func.name, [self.visit(arg) for arg in func.args.args], body)
+        return FuncDef(func.name, func.args.args, body)
+
+    def visit_Call(self, node):
+        return Call(func=self.visit(node.func),
+                    args=[self.visit(arg) for arg in node.args])
 
     def generic_visit(self, node):
         print("Visiting unsupported node", node.__class__.__name__)
@@ -249,6 +257,7 @@ def Interpret(ir, *args):
                 raise NotImplementedError("TODO: unsupported UnOp", node.op)
 
         def visit_Ref(self, node):
+            # Return the value stored in our scoped symbol table.
             val = self.syms[node.name]
             if node.index is None:
                 return val
@@ -260,6 +269,15 @@ def Interpret(ir, *args):
         
         def visit_IntConst(self, node):
             return node.val
+
+        def visit_Call(self, node):
+            try:
+                function = self.visit(node.func)
+                def f(*args):
+                    return Interpret(function, *args)
+            except KeyError:
+                f = eval(node.func.name)
+            return f(*[self.visit(arg) for arg in node.args])
 
         def generic_visit(self, node):
             if isinstance(node, int):
@@ -309,6 +327,12 @@ def Interpret(ir, *args):
 
             if min_ < max_:
                 # Append the continuation.
+                stmt = For(
+                        var=stmt.var,
+                        min=min_ + 1,
+                        max=max_,
+                        body=stmt.body
+                        )
                 stmt.min = min_ + 1
                 stack.append(stmt)
                 # Append the body for this iteration.
@@ -367,20 +391,19 @@ def for_loop(c) -> int:
 
     return c
 
-"""
-Stmt = Assign(Ref ref, Expr val)
-     | Block(Stmt* body)
-     | If(Expr cond, Stmt body, Stmt? elseBody)
-     | For(Str var, Expr min, Expr max, Stmt body)
-     | Return(Expr val)
-	 | FuncDef(Str name, Str* args, Stmt body)
-"""
+def call(string) -> int:
+    def foo(x):
+        for i in range(5):
+            x = x + 1
+        return x
+    return foo(int(string))
 
 def test_it():
     trivialInterpreted = Compile(trivial)
     operationsInterpreted = Compile(operations)
     if_elseInterpreted = Compile(if_else)
     for_loopInterpreted = Compile(for_loop)
+    callInterpreted = Compile(call)
 
     # run the original and our version, checking that their output matches:
     assert trivial(1) == trivialInterpreted(1)
@@ -388,9 +411,10 @@ def test_it():
     # TODO: add more of your own tests which exercise the functionality
     #       of your completed implementation
     assert operations(2) == operationsInterpreted(2)
-
     assert if_else(1, 2) == if_elseInterpreted(1, 2)
     assert for_loop(0) == for_loopInterpreted(0)
-    
+    assert call("1") == callInterpreted("1")
+
+
 if __name__ == '__main__':
     test_it()
