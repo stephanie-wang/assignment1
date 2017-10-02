@@ -84,24 +84,108 @@ class PythonToSimple(ast.NodeVisitor):
     arbitrary error or generate malformed results. Carefully catching
     and reporting errors is one of the most challenging parts of 
     building a user-friendly compiler.
+
+Stmt = Assign(Ref ref, Expr val)
+     | Block(Stmt* body)
+     | If(Expr cond, Stmt body, Stmt? elseBody)
+     | For(Str var, Expr min, Expr max, Stmt body)
+     | Return(Expr val)
+	 | FuncDef(Str name, Str* args, Stmt body)
+
     """
+    def visit_block(self, body):
+        return Block([self.visit(line) for line in body])
+
     def visit_Num(self, node):
         if isinstance(node.n, int):
             return IntConst(val=node.n)
+        elif isinstance(node.n, float):
+            return FloatConst(val=node.n)
         else:
             raise NotImplementedError("TODO: implement me!")
-    
+
+    def visit_BinOp(self, node):
+        return BinOp(op=node.op,
+                     left=self.visit(node.left),
+                     right=self.visit(node.right))
+
+    def visit_BoolOp(self, node):
+        left = self.visit(node.values[0])
+        for right in node.values[1:]:
+            left = BinOp(op=node.op,
+                         left=left,
+                         right=self.visit(right))
+        return left
+
+    def visit_Compare(self, node):
+        left = self.visit(node.left)
+        expr = None
+        for op, right in zip(node.ops, node.comparators):
+            right = self.visit(right)
+            compare = CmpOp(op=op, left=left, right=right)
+            if expr is None:
+                expr = compare
+            else:
+                expr = BinOp(op=ast.And,
+                             left=expr,
+                             right=compare)
+            left = right
+        return expr
+
+    def visit_UnaryOp(self, node):
+        return UnOp(op=node.op, e=self.visit(node.operand))
+
+    def visit_Name(self, node):
+        return Ref(name=node.id)
+
+    def visit_Subscript(self, node):
+        return Ref(name=self.visit(node.value),
+                   index=self.visit(node.slice))
+
+    def visit_Index(self, node):
+        return self.visit(node.value)
+
+    def visit_Assign(self, node):
+        if len(node.targets) > 1:
+            raise NotImplementedError("TODO: add support for tuple assignment")
+        return Assign(ref=self.visit(node.targets[0]),
+                      val=self.visit(node.value))
+
+    def visit_If(self, node):
+        return If(cond=self.visit(node.test),
+                  body=self.visit_block(node.body),
+                  elseBody=self.visit_block(node.orelse))
+
+    def visit_For(self, node):
+        _fields = ['var', 'min', 'max', 'body']
+        if not isinstance(node.iter, ast.Call) or node.iter.func.id != 'range':
+            raise NotImplementedError("TODO: Add support for for-loops besides range")
+        args = node.iter.args
+        if len(args) > 2:
+            raise NotImplementedError("TODO: Add support for range() with more than 2 arguments")
+
+        if len(args) == 1:
+            min_ = IntConst(val=0)
+        else:
+            min_ = self.visit(args[0])
+        max_ = self.visit(args[-1])
+
+        return For(var=self.visit(node.target),
+                   min=min_,
+                   max=max_,
+                   body=self.visit_block(node.body))
+
     def visit_Return(self, node):
         return Return(self.visit(node.value))
     
     def visit_FunctionDef(self, func):
-        assert len(func.args.args) == 0 # TODO: handle functions with arguments 
-
         assert isinstance(func.body, list)
-        assert len(func.body) == 1 # TODO: handle function bodies with >1 Stmt
-        body = self.visit(func.body[0])
-        
-        return FuncDef(func.name, [], body)
+        body = self.visit_block(func.body)
+        return FuncDef(func.name, [self.visit(arg) for arg in func.args.args], body)
+
+    def generic_visit(self, node):
+        print("Visiting unsupported node", node.__class__.__name__)
+        return node
 
 def Interpret(ir, *args):
     assert isinstance(ir, FuncDef)
@@ -157,8 +241,40 @@ def Compile(f):
 def trivial() -> int:
     return 5
 
+def operations() -> int:
+    x = 0 < 1 < 2
+    y = 1 > 3
+    z = not (x and y and (x or y))
+
+    a = 1
+    b = 2.0
+    c = a / b + a
+
+    if c > a:
+        d = 1
+        c = c + d
+    else:
+        d = 1
+        c = c - d
+
+    for i in range(1, 10):
+        c = c + i
+
+    return int(z) + c
+
+"""
+Stmt = Assign(Ref ref, Expr val)
+     | Block(Stmt* body)
+     | If(Expr cond, Stmt body, Stmt? elseBody)
+     | For(Str var, Expr min, Expr max, Stmt body)
+     | Return(Expr val)
+	 | FuncDef(Str name, Str* args, Stmt body)
+"""
+
 def test_it():
     trivialInterpreted = Compile(trivial)
+    operationsInterpreted = Compile(operations)
+
     # run the original and our version, checking that their output matches:
     assert trivial() == trivialInterpreted()
     
