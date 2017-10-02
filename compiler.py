@@ -23,7 +23,7 @@ Stmt = Assign(Ref ref, Expr val)
      | If(Expr cond, Stmt body, Stmt? elseBody)
      | For(Str var, Expr min, Expr max, Stmt body)
      | Return(Expr val)
-	 | FuncDef(Str name, Str* args, Stmt body)
+     | FuncDef(Str name, Str* args, Stmt body)
 """
 
 ## Exprs ##
@@ -126,7 +126,7 @@ Stmt = Assign(Ref ref, Expr val)
             if expr is None:
                 expr = compare
             else:
-                expr = BinOp(op=ast.And,
+                expr = BinOp(op=ast.And(),
                              left=expr,
                              right=compare)
             left = right
@@ -170,7 +170,7 @@ Stmt = Assign(Ref ref, Expr val)
             min_ = self.visit(args[0])
         max_ = self.visit(args[-1])
 
-        return For(var=self.visit(node.target),
+        return For(var=node.target.id,
                    min=min_,
                    max=max_,
                    body=self.visit_block(node.body))
@@ -189,30 +189,133 @@ Stmt = Assign(Ref ref, Expr val)
 
 def Interpret(ir, *args):
     assert isinstance(ir, FuncDef)
-    assert len(args) == 0 # TODO: you should handle functions with arguments
+    assert len(args) == len(ir.args) # TODO: you should handle functions with arguments
     
     # Initialize a symbol table, to store variable => value bindings
     # TODO: fill this with the function arguments to start
     syms = {}
+    for arg, val in zip(ir.args, args):
+        syms[arg.arg] = val
     
     # Build a visitor to evaluate Exprs, using the symbol table to look up
     # variable definitions
     class EvalExpr(ast.NodeVisitor):
         def __init__(self, symbolTable):
             self.syms = symbolTable
+
+        def visit_BinOp(self, node):
+            left = self.visit(node.left)
+            right = self.visit(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            elif isinstance(node.op, ast.Sub):
+                return left - right
+            elif isinstance(node.op, ast.Mult):
+                return left * right
+            elif isinstance(node.op, ast.Div):
+                return left / right
+            elif isinstance(node.op, ast.And):
+                return left and right
+            elif isinstance(node.op, ast.Or):
+                return left or right
+            else:
+                raise NotImplementedError("TODO: unsupported BinOp", node.op)
+
+        def visit_CmpOp(self, node):
+            left = self.visit(node.left)
+            right = self.visit(node.right)
+            if isinstance(node.op, ast.Eq):
+                return left == right
+            elif isinstance(node.op, ast.NotEq):
+                return left != right
+            elif isinstance(node.op, ast.Lt):
+                return left < right
+            elif isinstance(node.op, ast.Gt):
+                return left > right
+            elif isinstance(node.op, ast.LtE):
+                return left <= right
+            elif isinstance(node.op, ast.GtE):
+                return left >= right
+            else:
+                raise NotImplementedError("TODO: unsupported CmpOp", node.op)
+
+        def visit_UnOp(self, node):
+            e = self.visit(node.e)
+            if isinstance(node.op, ast.USub):
+                return -1 * e
+            elif isinstance(node.op, ast.Not):
+                return not e
+            else:
+                raise NotImplementedError("TODO: unsupported UnOp", node.op)
+
+        def visit_Ref(self, node):
+            val = self.syms[node.name]
+            if node.index is None:
+                return val
+            else:
+                return val[self.visit(node.index)]
+
+        def visit_FloatConst(self, node):
+            return node.val
         
         def visit_IntConst(self, node):
             return node.val
+
+        def generic_visit(self, node):
+            if isinstance(node, int):
+                return node
+            raise Exception("Visited unsupported node", node)
+
     
     evaluator = EvalExpr(syms)
     
     # TODO: you will probably need to track more than just a single current
     #       statement to deal with Blocks and nesting.
-    stmt = ir.body
-    while True:
+    """
+    Stmt = Assign(Ref ref, Expr val)
+     | Block(Stmt* body)
+     | If(Expr cond, Stmt body, Stmt? elseBody)
+     | For(Str var, Expr min, Expr max, Stmt body)
+     | Return(Expr val)
+     | FuncDef(Str name, Str* args, Stmt body)
+    """
+    stack = [ir.body]
+    while stack:
+        stmt = stack.pop()
         assert isinstance(stmt, ast.AST)
         if isinstance(stmt, Return):
             return evaluator.visit(stmt.val)
+        elif isinstance(stmt, Assign):
+            if stmt.ref.index is None:
+                syms[stmt.ref.name] = evaluator.visit(stmt.val)
+            else:
+                syms[stmt.ref.name][stmt.ref.index] = evaluator.visit(stmt.val)
+        elif isinstance(stmt, Block):
+            for line in reversed(stmt.body):
+                stack.append(line)
+        elif isinstance(stmt, If):
+            cond = evaluator.visit(stmt.cond)
+            if cond:
+                stack.append(stmt.body)
+            else:
+                stack.append(stmt.elseBody)
+        elif isinstance(stmt, For):
+            min_ = evaluator.visit(stmt.min)
+            max_ = evaluator.visit(stmt.max)
+            if not isinstance(min_, int):
+                raise TypeError("object cannot be interpreted as an integer")
+            if not isinstance(max_, int):
+                raise TypeError("object cannot be interpreted as an integer")
+
+            if min_ < max_:
+                # Append the continuation.
+                stmt.min = min_ + 1
+                stack.append(stmt)
+                # Append the body for this iteration.
+                stack.append(stmt.body)
+                syms[stmt.var] = min_
+        elif isinstance(stmt, FuncDef):
+            syms[stmt.name] = stmt
         else:
             raise NotImplementedError("TODO: add support for the full IR")
 
@@ -238,29 +341,31 @@ def Compile(f):
 #############
 
 # Define a trivial test program to start
-def trivial() -> int:
-    return 5
+def trivial(x) -> int:
+    return x
 
-def operations() -> int:
-    x = 0 < 1 < 2
+def operations(arg) -> int:
+    x = 0 < 1 < arg
     y = 1 > 3
     z = not (x and y and (x or y))
 
     a = 1
     b = 2.0
     c = a / b + a
+    return c
 
-    if c > a:
-        d = 1
-        c = c + d
+def if_else(a, b) -> int:
+    if a > b:
+        a = a + b
     else:
-        d = 1
-        c = c - d
+        a = a - b
+    return a
 
+def for_loop(c) -> int:
     for i in range(1, 10):
         c = c + i
 
-    return int(z) + c
+    return c
 
 """
 Stmt = Assign(Ref ref, Expr val)
@@ -274,12 +379,18 @@ Stmt = Assign(Ref ref, Expr val)
 def test_it():
     trivialInterpreted = Compile(trivial)
     operationsInterpreted = Compile(operations)
+    if_elseInterpreted = Compile(if_else)
+    for_loopInterpreted = Compile(for_loop)
 
     # run the original and our version, checking that their output matches:
-    assert trivial() == trivialInterpreted()
+    assert trivial(1) == trivialInterpreted(1)
     
     # TODO: add more of your own tests which exercise the functionality
     #       of your completed implementation
+    assert operations(2) == operationsInterpreted(2)
+
+    assert if_else(1, 2) == if_elseInterpreted(1, 2)
+    assert for_loop(0) == for_loopInterpreted(0)
     
 if __name__ == '__main__':
     test_it()
